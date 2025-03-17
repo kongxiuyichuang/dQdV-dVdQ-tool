@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IC 曲线分析工具 (dQdV & dVdQ)</title>
+    <style>
+         body {
+            font-family: sans-serif;
+            margin: 20px;
+        }
+        .container {
+            width: 80%;
+            margin: 20px auto;
+            font-family: sans-serif;
+        }
+        .input-section, .options-section, .result-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        .main-content {
+            display: flex; /* 使用 Flexbox 布局 */
+            gap: 20px; /* 设置两个区域之间的间距 */
+            margin-bottom: 20px; /* 可选：设置与下方结果区域的间距 */
+        }
+        .options-section {
+            flex: 1; /* options-section 占据剩余空间的一部分 */
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        .original-data-chart-section {
+            flex: 1; /* original-data-chart-section 占据剩余空间的一部分 */
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        textarea {
+            width: 100%;
+            height: 150px;
+            margin-bottom: 10px;
+            padding: 8px;
+            box-sizing: border-box;
+            font-family: monospace; /* Fixed width font for data input */
+            white-space: pre; /* Keep original whitespace for data input */
+        }
+        label {
+            display: inline-block;
+            width: 120px;
+            text-align: right;
+            margin-right: 10px;
+        }
+        input[type="number"], select {
+            padding: 5px;
+            border-radius: 3px;
+            border: 1px solid #ddd;
+            width: 80px; /* Adjust width as needed */
+        }
+        button {
+            padding: 8px 15px;
+            border: none;
+            border-radius: 5px;
+            background-color: #007BFF;
+            color: white;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #icChart {
+            width: 800px; /* Adjust chart width as needed */
+            height: 400px; /* Adjust chart height as needed */
+            margin: 20px auto; /* Center the chart */
+            display: block; /* Ensure margin auto works */
+        }
+        #peaksTable {
+            margin-top: 20px;
+            font-family: monospace;
+            white-space: pre-wrap; /* For text-based table, adjust as needed */
+        }
+    </style>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>IC 曲线分析工具</h1>
+        <div class="input-section">
+            <h2>数据输入</h2>
+            <p>请选择 CSV 数据文件 (格式：容量, 电压，每行一对数值，逗号分隔).</p>
+            <input type="file" id="csvFileInput" accept=".csv"> <br><br>
+        </div>
+        <div class="main-content"> <div class="options-section">
+                <h2>分析选项</h2>
+                <label for="method">分析方法:</label>
+                <select id="method">
+                    <option value="dQdV" selected>dQdV</option>
+                    <option value="dVdQ">dVdQ</option>
+                </select><br><br>
+                <label for="pointNum">插值点数:</label>
+                <input type="number" id="pointNum" value="150"><br><br>
+                <label for="minProminence">最小突出度:</label>
+                <input type="number" id="minProminence" value="0"><br><br>
+                <label for="windowSize">平滑窗口大小:</label>
+                <input type="number" id="windowSize" value="10"><br><br>
+                <label for="step">微分步长:</label>
+                <input type="number" id="step" value="0.01"><br><br>
+                <label for="peaksPlot">显示峰值点:</label>
+                <input type="checkbox" id="peaksPlot"><br><br>
+                <button id="calculateButton">计算并分析</button>
+            </div>
+            <div class="original-data-chart-section">
+                <h2>原始数据绘图</h2>
+                <div id="originalDataChart" style="width:100%;height:300px;"></div>
+            </div> </div>
+        <div class="result-section">
+            <h2>分析结果</h2>
+            <div id="plotlyChart" style="width:100%;height:500px;"></div>
+            <div id="peaksTable"></div>
+            <button id="downloadButton">下载数据 (IC & Peaks)</button>
+            <button id="downloadXOutDydxButton">导出 [x_out, dydx] 原数据</button>
+            <button id="downloadXDataYDataButton">导出 [xData, yData] 插值数据</button>
+        </div>
+    </div>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const csvFileInput = document.getElementById('csvFileInput');
+        const methodSelect = document.getElementById('method');
+        const pointNumInput = document.getElementById('pointNum');
+        const minProminenceInput = document.getElementById('minProminence');
+        const windowSizeInput = document.getElementById('windowSize');
+        const stepInput = document.getElementById('step');
+        const peaksPlotCheckbox = document.getElementById('peaksPlot');
+        const calculateButton = document.getElementById('calculateButton');
+        const downloadButton = document.getElementById('downloadButton');
+        const icChartCanvas = document.getElementById('icChart');
+        const peaksTableDiv = document.getElementById('peaksTable');
+        const downloadXOutDydxButton = document.getElementById('downloadXOutDydxButton');
+        const downloadXDataYDataButton = document.getElementById('downloadXDataYDataButton');
+        let chartInstance = null;
+        let icDataResult = null;
+        let peaksInforResult = null;
+        let currentXOut = null; // 用于存储 x_out
+        let currentDydx = null; // 用于存储 dydx
+        let currentXData = null; // 用于存储 xData
+        let currentYData = null; // 用于存储 yData
+        calculateButton.addEventListener('click', function() {
+            const csvFile = csvFileInput.files[0];
+            if (!csvFile) {
+                alert('请先选择 CSV 数据文件！');
+                return;
+            }
+            const method = methodSelect.value;
+            const pointNum = parseInt(pointNumInput.value);
+            const peaksPlot = peaksPlotCheckbox.checked;
+            const minProminence = parseFloat(minProminenceInput.value);
+            const windowSize = parseInt(windowSizeInput.value);
+            const step = parseFloat(stepInput.value);
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const csvText = event.target.result;
+                const data = parseCSVData(csvText);
+                if (!data || data.length < 2) {
+                    alert('CSV 文件数据格式不正确或数据量不足，请检查文件内容为 "容量, 电压"，每行一对数值，逗号分隔。');
+                    return;
+                }
+                // 绘制原始数据图表
+                renderOriginalDataChart(data, 'originalDataChart');
+                const options = {
+                    method: method,
+                    point_num: pointNum,
+                    peaks_plot: peaksPlot ? 'on' : 'off',
+                    plot_flage: 'off',
+                    minProminence: minProminence,
+                    windowSize: windowSize,
+                    step: step
+                };
+                const analysisResult = calculateICCurve(data, options);
+                if (!analysisResult) {
+                    alert('IC 曲线分析计算失败，请检查输入数据和参数。');
+                    return;
+                }
+                const icData = analysisResult.IC_data;
+                const peaksInfor = analysisResult.peaks_infor;
+                const x_out = analysisResult.x_out;
+                const dydx = analysisResult.dydx;
+                // 正确地从 icData 中提取 x_interp 和 y_interp
+                const xInterpData = icData.map(item => item[0]);
+                const yInterpData = icData.map(item => item[1]);
+                icDataResult = icData;
+                peaksInforResult = peaksInfor;
+                currentXOut = x_out;
+                currentDydx = dydx;
+                currentXData = xInterpData;
+                currentYData = yInterpData;
+                // renderChart(icData, peaksInfor, method, peaksPlot, icChartCanvas, x_out, dydx); // 传递 x_out 和 dydx
+                updateChartWithPlotly(icData, peaksInfor, method, peaksPlot, 'plotlyChart', x_out, dydx); //  使用 'plotlyChart' 容器 ID
+                displayPeaksTable(peaksInfor, peaksTableDiv);
+                downloadButton.disabled = false;
+                downloadXOutDydxButton.disabled = false;
+                downloadXDataYDataButton.disabled = false;
+
+            };
+            reader.onerror = function() {
+                alert('读取 CSV 文件失败！');
+            };
+            reader.readAsText(csvFile); // 以文本格式读取 CSV 文件
+        });
+        downloadButton.addEventListener('click', function() {
+            if (icDataResult) {
+                downloadData(icDataResult, peaksInforResult, methodSelect.value); // 下载数据 (CSV 格式)
+            } else {
+                alert('请先进行计算分析再下载数据！');
+            }
+        });
+        // 为新增的下载 [x_out, dydx] 按钮添加事件监听器
+        downloadXOutDydxButton.addEventListener('click', function() {
+            if (currentXOut && currentDydx) {
+                downloadTwoColumnData(currentXOut, currentDydx, 'x_out_dydx_data', 'x_out', 'dydx');
+            } else {
+                alert('请先进行计算分析再下载 [x_out, dydx] 数据！');
+            }
+        });
+        // 为新增的下载 [xData, yData] 按钮添加事件监听器
+        downloadXDataYDataButton.addEventListener('click', function() {
+            if (currentXData && currentYData) {
+                downloadTwoColumnData(currentXData, currentYData, 'xData_yData_filtered', 'xData', 'yData');
+            } else {
+                alert('请先进行计算分析再下载 [xData, yData] 数据！');
+            }
+        });
+        // **-----  核心算法 JavaScript 实现  -----**
+        function calculateICCurve(data, options) {
+            let x, y, x_label, y_label, dx =[], dy =[], x_out =[], dydx =[];
+            //let x, y, x_label, y_label, dx, dy, x_out, dydx;
+            const method = options.method;
+            const point_num = options.point_num;
+            const peaks_plot = options.peaks_plot;
+            const plot_flage = options.plot_flage;
+            const minProminence = options.minProminence;
+            const windowSize = options.windowSize;
+            const step = options.step;
+            switch (method) {
+                case 'dQdV':
+                    x = data.map(row => row[1]); // Voltage (column 2)
+                    y = data.map(row => row[0]); // Capacity (column 1)
+                    x_label = 'Voltage';
+                    y_label = 'Capacity';
+                    console.log("dQdV Method Selected");
+                    console.log("x (Voltage) before sorting:", x); // 添加日志 - 排序前
+                    console.log("y (Capacity) before sorting:", y); // 添加日志 - 排序前
+                    break;
+                case 'dVdQ':
+                    x = data.map(row => row[0]); // Capacity (column 1)
+                    y = data.map(row => row[1]); // Voltage (column 2)
+                    x_label = 'Capacity';
+                    y_label = 'Voltage';
+                    console.log("dVdQ Method Selected");
+                    console.log("x (Capacity) before sorting:", x); // 添加日志 - 排序前
+                    console.log("y (Voltage) before sorting:", y); // 添加日志 - 排序前
+                    break;
+                default:
+                    alert('Invalid method: ' + method);
+                    return null; // Indicate error
+            }
+            // **-------  立即对 x 和 y 数据进行排序  -------**
+            const { sortedXData, sortedYData } = sortDataByX(x, y);
+            x = sortedXData;
+            y = sortedYData;
+            console.log("x (Sorted) after sorting:", x); // 添加日志 - 排序后
+            console.log("y (Sorted) after sorting:", y); // 添加日志 - 排序后
+            let i = 0, k = 0;
+            const numV = x.length;
+            while (i < numV) {
+                let diff = 0;
+                let j = 0;
+                while (diff < step && (i + j) < (y.length - 1)) { // use y.length instead of numel(y)-1
+                    diff = Math.abs(x[i + j] - x[i]);
+                    j++;
+                }
+                dx[k] = x[i + j] - x[i];
+                x_out[k] = x[i];
+                dy[k] = y[i + j] - y[i];
+                i++;
+                k++;
+            }
+            dydx = dy.map((val, index) => val / dx[index]);
+            // Remove leading 0's and NaN's
+            let NaNindex = -1;
+            for (let i = 0; i < dydx.length; i++) {
+                if (dydx[i] !== 0 && !isNaN(dydx[i])) {
+                    NaNindex = i;
+                    break;
+                }
+            }
+            if (NaNindex !== -1) {
+                x_out = x_out.slice(NaNindex);
+                dydx = dydx.slice(NaNindex);
+            } else {
+                x_out =[];
+                dydx =[];
+            }
+            // 过滤-插值
+            let x_output = [...x_out]; // Create copies to avoid modifying original arrays
+            let y_output = [...dydx];
+            const x_interp = linspace(Math.min(...x_output), Math.max(...x_output), point_num);
+            console.log("unique_x before unique point processing:", x_output); // 添加日志
+            console.log("unique_y before unique point processing:", y_output); // 添加日志
+            // 1. 处理重复的 x 点
+            const uniqueXMap = {};
+            const unique_x_temp =[];
+            const y_sum =[];
+            const y_count =[];
+            for (let i = 0; i < x_output.length; i++) {
+                const currentX = x_output[i];
+                if (uniqueXMap[currentX] === undefined) {
+                    uniqueXMap[currentX] = unique_x_temp.length; // Store index for accumarray-like behavior
+                    unique_x_temp.push(currentX);
+                    y_sum.push(y_output[i]);
+                    y_count.push(1);
+                } else {
+                    const index = uniqueXMap[currentX];
+                    y_sum[index] += y_output[i];
+                    y_count[index] += 1;
+                }
+            }
+            const unique_x = unique_x_temp;
+            const unique_y = y_sum.map((sum, index) => sum / y_count[index]); // Calculate mean
+            console.log("unique_x after unique point processing:", unique_x); // 添加日志
+            console.log("unique_y after unique point processing:", unique_y); // 添加日志
+            //2. 过滤 (中值滤波)
+            const filtered_y = medianFilter(unique_y, windowSize); // 使用中值滤波函数
+            console.log("filtered_y after median filter:", filtered_y); // 添加日志
+            const filtered_x = unique_x;
+            const xData = filtered_x;
+            const yData = filtered_y;
+            // 3. 平滑样条拟合和插值 (简化的平滑样条拟合，这里简化为线性插值)
+            //   const x_interp = linspace(Math.min(...x_output), Math.max(...x_output), point_num);
+            const y_interp = interpolateSpline(xData, yData, x_interp); // 使用线性插值
+            console.log("xData for interpolation:", xData); // 添加日志
+            console.log("yData for interpolation:", yData); // 添加日志
+            console.log("x_interp for interpolation:", x_interp); // 添加日志
+            console.log("y_interp after interpolation:", y_interp); // 添加日志
+            // 寻峰
+            let peaks_infor =[];
+            if (data[0][1] > data[data.length - 1][1]) { // voltage column index is 1
+                let peaks, locs;
+                if (method === 'dVdQ' || method === 'dQdV') {
+                    ({ peaks, locs } = findPeaks(y_interp.map(val => -val), x_interp, minProminence)); // Find peaks (inverted y_interp)
+                    peaks_infor = locs.map((loc, index) => [loc, -peaks[index]]); // Combine locs and inverted peaks
+                }
+            } else {
+                let peaks, locs;
+                if (method === 'dVdQ' || method === 'dQdV') {
+                    ({ peaks, locs } = findPeaks(y_interp, x_interp, minProminence)); // Find peaks
+                    peaks_infor = locs.map((loc, index) => [loc, peaks[index]]); // Combine locs and peaks
+                }
+            }
+            // **修改：在返回值中添加 x_out 和 dydx**
+            return { IC_data: zip(x_interp, y_interp), peaks_infor: peaks_infor, x_out: x_out, dydx: dydx }; // 返回结果数据, 峰值信息, x_out, dydx
+        }
+        // **-----  辅助函数 (数据解析, 插值, 滤波, 寻峰, 绘图, 下载) -----**
+        // **修改: parseData 重命名为 parseCSVData 并修改解析逻辑以处理 CSV 格式**
+        function parseCSVData(csvText) {
+            const lines = csvText.trim().split('\n');
+            return lines.map(line => {
+                const parts = line.trim().split(','); // 使用逗号分隔 CSV 值
+                if (parts.length === 2) {
+                    const capacity = parseFloat(parts[0]);
+                    const voltage = parseFloat(parts[1]);
+                    if (!isNaN(capacity) && !isNaN(voltage)) {
+                        return [capacity, voltage];
+                    }
+                }
+                return null;
+            }).filter(row => row !== null);
+        }
+        function linspace(start, end, count) {
+            const arr =[];
+            const step = (end - start) / (count - 1);
+            for (let i = 0; i < count; i++) {
+                arr.push(start + step * i);
+            }
+            return arr;
+        }
+        function medianFilter(arr, windowSize) {
+            const halfWindow = Math.floor(windowSize / 2);
+            return arr.map((_, index) => {
+                const startIndex = Math.max(0, index - halfWindow);
+                const endIndex = Math.min(arr.length - 1, index + halfWindow);
+                const window = arr.slice(startIndex, endIndex + 1).sort((a, b) => a - b);
+                const midIndex = Math.floor(window.length / 2);
+                return window.length % 2 === 0 ? (window[midIndex - 1] + window[midIndex]) / 2 : window[midIndex];
+            });
+        }
+        function interpolateSpline(xData, yData, xInterp) {
+            // Simplified spline interpolation using linear interpolation for web demo
+            const yInterp =[];
+            for (let i = 0; i < xInterp.length; i++) {
+                const targetX = xInterp[i];
+                if (targetX <= xData[0]) {
+                    yInterp.push(yData[0]);
+                } else if (targetX >= xData[xData.length - 1]) {
+                    yInterp.push(yData[xData.length - 1]);
+                } else {
+                    for (let j = 0; j < xData.length - 1; j++) {
+                        if (targetX >= xData[j] && targetX <= xData[j + 1]) {
+                            const fraction = (targetX - xData[j]) / (xData[j + 1] - xData[j]);
+                            yInterp.push(yData[j] + fraction * (yData[j + 1] - yData[j]));
+                            break;
+                        }
+                    }
+                }
+            }
+            return yInterp;
+        }
+        function findPeaks(yData, xData, minProminence) {
+            const peaks =[];
+            const locs =[];
+            if (yData.length === 0) { // handle empty yData
+                return { peaks:peaks, locs:locs};
+            }
+            for (let i = 1; i < yData.length - 1; i++) {
+                if (yData[i] > yData[i - 1] && yData[i] > yData[i + 1]) { // Basic peak detection
+                    const prominence = yData[i] - Math.min(yData[i - 1], yData[i + 1]); // Simplified prominence
+                    if (prominence >= minProminence) {
+                        peaks.push(yData[i]);
+                        locs.push(xData[i]);
+                    }
+                }
+            }
+            return { peaks: peaks, locs: locs };
+        }
+        function updateChartWithPlotly(icData, peaksInfor, method, peaksPlot, chartDivId, x_out, dydx) {
+            const xLabel = method === 'dVdQ' ? 'Capacity' : 'Voltage';
+            const yLabel = method === 'dVdQ' ? 'dVdQ' : 'dQdV';
+            const traceOriginalData = {
+                x: x_out, // 使用 x_out 数据
+                y: dydx, // 使用 dydx 数据
+                mode: 'markers',
+                type: 'scatter',
+                name: '原始数据 (微分)',
+                marker: {color: 'blue', size: 2} // 设置点颜色为蓝色，大小为 3
+            };
+            const traceFittedCurve = {
+                x: icData.map(item => item[0]),
+                y: icData.map(item => item[1]),
+                mode: 'lines',
+                type: 'scatter',
+                name: '平滑拟合曲线',
+                line: {color: 'red',size: 4} // 设置线条颜色为红色
+            };
+            const data = [traceOriginalData,traceFittedCurve]; // 默认包含拟合曲线和原始数据
+            if (peaksPlot && peaksInfor && peaksInfor.length > 0) {
+                const tracePeaks = {
+                    x: peaksInfor.map(peak => peak[0]),
+                    y: peaksInfor.map(peak => peak[1]),
+                    mode: 'markers',
+                    type: 'scatter',
+                    name: '峰值点',
+                    marker: {color: 'black', size: 8, symbol: 'diamond'} // 设置峰值点样式
+                };
+                data.push(tracePeaks); // 如果显示峰值点，则添加到数据中
+            }
+            const layout = {
+                title: {
+                    text: 'IC 曲线分析 (' + method + ' Method)',
+                    x: 0.5, // 标题水平居中
+                    xanchor: 'center'
+                },
+                xaxis: {
+                    title: xLabel
+                },
+                yaxis: {
+                    title: yLabel
+                },
+                legend: {
+                    orientation: 'h', // 图例水平显示
+                    yanchor: 'bottom',
+                    y: 1.02,
+                    xanchor: 'right',
+                    x: 1
+                },
+                // 默认 Plotly 工具栏已经足够使用，如果需要可以配置 config 来自定义工具栏
+                // modebar: {
+                //     orientation: 'v' // 工具栏垂直显示 (默认水平)
+                // }
+            };
+            Plotly.newPlot(chartDivId, data, layout); // chartDivId  替换之前的 'plotlyChart' 字符串
+        }
+        function displayPeaksTable(peaksInfor, tableDiv) {
+            if (peaksInfor && peaksInfor.length > 0) {
+                let tableHTML = '<h3>峰值信息</h3><table border="1"><thead><tr><th>位置 (Voltage/Capacity)</th><th>峰值 (dQdV/dVdQ)</th></tr></thead><tbody>';
+                peaksInfor.forEach(peak => {
+                    tableHTML += `<tr><td>${peak[0].toFixed(3)}</td><td>${peak[1].toFixed(3)}</td></tr>`;
+                });
+                tableHTML += '</tbody></table>';
+                tableDiv.innerHTML = tableHTML;
+            } else {
+                tableDiv.innerHTML = '<p>未检测到峰值。</p>'; // Or clear previous table
+            }
+        }
+        function sortDataByX(xData, yData) {
+            const zippedData = zip(xData, yData); // 使用之前的 zip 函数
+            zippedData.sort((a, b) => a[0] - b[0]); // Sort based on x values (升序)
+            const sortedXData = zippedData.map(item => item[0]);
+            const sortedYData = zippedData.map(item => item[1]);
+            return { sortedXData: sortedXData, sortedYData: sortedYData };
+        }
+        function downloadData(icData, peaksInfor, method) {
+            let csvContent = "data:text/csv;charset=utf-8,";
+            csvContent += "IC Curve Data (" + method + ")\n";
+            csvContent += "x,y\n"; // Headers for IC data
+            icData.forEach(item => {
+                csvContent += item[0] + "," + item[1] + "\n";
+            });
+            csvContent += "\nPeak Information\n";
+            csvContent += "Location (Voltage/Capacity),Peak (dQdV/dVdQ)\n"; // Headers for peak data
+            if (peaksInfor && peaksInfor.length > 0) {
+                peaksInfor.forEach(peak => {
+                    csvContent += peak[0] + "," + peak[1] + "\n";
+                });
+            } else {
+                csvContent += "No peaks detected\n";
+            }
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", "ic_curve_data_" + method + ".csv");
+            document.body.appendChild(link); // Required for Firefox
+            link.click();
+            document.body.removeChild(link); // Clean up
+        }
+        // 新增下载两列数据的函数
+        function downloadTwoColumnData(arr1, arr2, baseFilename, header1, header2) {
+            if (arr1.length !== arr2.length) {
+                alert('两个数组长度不一致，无法合并下载！');
+                return;
+            }
+            let csvContent = "data:text/csv;charset=utf-8,";
+            csvContent += header1 + "," + header2 + "\n"; // Headers
+            for (let i = 0; i < arr1.length; i++) {
+                csvContent += arr1[i] + "," + arr2[i] + "\n";
+            }
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", baseFilename + ".csv");
+            document.body.appendChild(link); // Required for Firefox
+            link.click();
+            document.body.removeChild(link); // Clean up
+        }
+        // 新增绘制原始数据图表的函数
+        function renderOriginalDataChart(originalData, chartDivId) {
+            if (!originalData || originalData.length === 0) {
+                return;
+            }
+            const capacityData = originalData.map(row => row[0]);
+            const voltageData = originalData.map(row => row[1]);
+            const traceOriginal = {
+                x: capacityData,
+                y: voltageData,
+                mode: 'markers',
+                type: 'scatter',
+                name: '原始数据',
+                marker: { color: 'gray', size: 5 }
+            };
+            const layoutOriginal = {
+                title: {
+                    text: '导入的原始数据',
+                    x: 0.5,
+                    xanchor: 'center'
+                },
+                xaxis: { title: '容量' },
+                yaxis: { title: '电压' }
+            };
+            Plotly.newPlot(chartDivId, [traceOriginal], layoutOriginal);
+        }
+        // Utility function to zip arrays (for data formatting)
+        function zip(arr1, arr2) {
+            return arr1.map((val, index) => [val, arr2[index]]);
+        }
+    });
+        </script>
+    </body>
+</html>
